@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>実コース完全版：Rmin対応・外乱復帰ゲート再計算デモ</title>
+<style>
+:root{--bg:#0f172a;--panel:#102033;--text:#f3f4f6;--muted:#c9d2dc;--water:#8edbea;--route:#f7d86a;--track:#1f4ea8;--gate:#22c55e;--align:#fb923c;--recovery:#a855f7;--red:#ff4b55;--look:#8b5cf6;}
+*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+.wrap{display:grid;grid-template-columns:minmax(620px,1fr) 430px;gap:12px;padding:12px;min-height:100vh}
+.views{display:grid;grid-template-columns:1fr 1fr;gap:12px;min-height:calc(100vh - 24px)}
+.canvasBox{position:relative;background:#0b1220;border-radius:16px;overflow:hidden;box-shadow:0 8px 24px #0008}.canvasBox h2{position:absolute;left:12px;top:8px;margin:0;font-size:14px;color:#0f172a;background:#ffffffc9;padding:4px 8px;border-radius:999px;z-index:2}
+canvas{display:block;width:100%;height:calc(100vh - 24px);background:var(--water)}
+.panel{background:var(--panel);border-radius:16px;padding:14px;overflow-y:auto;max-height:calc(100vh - 24px)}
+h1{font-size:18px;margin:0 0 8px} h2{font-size:14px;margin:17px 0 8px;color:#e5edf7} p{color:var(--muted);font-size:13px;line-height:1.5}.note{border-left:3px solid #60a5fa;padding-left:10px}
+.controls{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0}button{background:#1c3148;color:var(--text);border:1px solid rgba(255,255,255,.18);border-radius:10px;padding:10px;cursor:pointer;font-weight:650}button:hover{border-color:#60a5fa}.primary{background:#1d4ed8;border-color:#3b82f6}.danger{background:#7f1d1d;border-color:#ef4444}.purple{background:#581c87;border-color:#a855f7}
+label{display:grid;grid-template-columns:154px 1fr 62px;gap:8px;align-items:center;margin:8px 0;font-size:12.5px;color:#dbeafe}input[type=range]{width:100%}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:8px}.card{background:#ffffff12;border:1px solid #ffffff1a;border-radius:12px;padding:8px}.k{font-size:11px;color:#bac8d8}.v{font-size:14px;font-weight:750;margin-top:2px;word-break:break-word}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#0005;padding:8px;border-radius:10px;color:#d1d5db;font-size:12px;white-space:pre-wrap}.legend div{display:flex;align-items:center;gap:8px;margin:5px 0;color:var(--muted);font-size:12.5px}.sw{width:24px;height:4px;border-radius:4px;background:white;display:inline-block}
+@media(max-width:1150px){.wrap{grid-template-columns:1fr}.views{height:72vh}.panel{max-height:none}canvas{height:72vh}}@media(max-width:760px){.views{grid-template-columns:1fr}canvas{height:48vh}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="views">
+    <div class="canvasBox"><h2>全体図</h2><canvas id="overview" width="980" height="820"></canvas></div>
+    <div class="canvasBox"><h2>船中心拡大</h2><canvas id="local" width="760" height="820"></canvas></div>
+  </div>
+  <div class="panel">
+    <h1>Rmin対応：外乱時の復帰ゲート再計算デモ</h1>
+    <p class="note">通常時は事前生成したRmin円弧ゲート＋整流ゲートを追従します。大きく外れた場合は、現在位置・現在方位から元のゲート列へ戻るための一時的な復帰ゲートを生成します。今回の版では、復帰ゲートも最小旋回半径Rminを満たすDubins型の経路から生成します。</p>
+    <div class="controls">
+      <button class="primary" id="toggle">開始 / 一時停止</button>
+      <button id="step">1ステップ</button>
+      <button id="reset">リセット</button>
+      <button class="danger" id="disturb">大きい外乱</button>
+      <button class="purple" id="manualRecover">手動で復帰再計算</button>
+      <button id="toggleRecovery">自動復帰 ON/OFF</button>
+    </div>
+
+    <h2>経路生成</h2>
+    <label>4m計画距離[m]<input id="clearance" type="range" min="2" max="12" step="0.5" value="4"><span id="clearanceVal"></span></label>
+    <label>Rmin[m]<input id="rmin" type="range" min="20" max="300" step="5" value="90"><span id="rminVal"></span></label>
+    <label>円弧ゲート数<input id="gateCount" type="range" min="9" max="25" step="2" value="15"><span id="gateCountVal"></span></label>
+    <label>円弧角度倍率[%]<input id="arcScale" type="range" min="70" max="150" step="5" value="110"><span id="arcScaleVal"></span></label>
+    <label>整流ゲート数<input id="alignCount" type="range" min="0" max="12" step="1" value="5"><span id="alignCountVal"></span></label>
+    <label>整流長さ上限[m]<input id="alignLength" type="range" min="20" max="400" step="10" value="160"><span id="alignLengthVal"></span></label>
+
+    <h2>追従</h2>
+    <label>速度[m/s]<input id="speed" type="range" min="0.5" max="6" step="0.1" value="4.0"><span id="speedVal"></span></label>
+    <label>表示倍率<input id="timeScale" type="range" min="1" max="500" step="5" value="140"><span id="timeScaleVal"></span></label>
+    <label>直線注視[m]<input id="lookFar" type="range" min="20" max="180" step="5" value="80"><span id="lookFarVal"></span></label>
+    <label>ブイ付近注視[m]<input id="lookNear" type="range" min="5" max="60" step="1" value="18"><span id="lookNearVal"></span></label>
+    <label>短縮開始[m]<input id="nearRadius" type="range" min="40" max="300" step="10" value="150"><span id="nearRadiusVal"></span></label>
+    <label>次ゲート先読み[m]<input id="gateLead" type="range" min="0" max="60" step="2" value="12"><span id="gateLeadVal"></span></label>
+    <label>追従ゲイン<input id="gain" type="range" min="0.4" max="2.5" step="0.1" value="1.2"><span id="gainVal"></span></label>
+    <label>旋回応答[s]<input id="turnTau" type="range" min="0.1" max="3" step="0.1" value="0.8"><span id="turnTauVal"></span></label>
+
+    <h2>外乱復帰</h2>
+    <label>逸脱判定[m]<input id="offThreshold" type="range" min="10" max="250" step="5" value="60"><span id="offThresholdVal"></span></label>
+    <label>復帰先探索数<input id="searchAhead" type="range" min="2" max="30" step="1" value="14"><span id="searchAheadVal"></span></label>
+    <label>復帰ゲート数<input id="recoveryCount" type="range" min="3" max="20" step="1" value="9"><span id="recoveryCountVal"></span></label>
+    <label>復帰最大点間[m]<input id="recoveryLength" type="range" min="20" max="300" step="10" value="60"><span id="recoveryLengthVal"></span></label>
+    <label>再計算間隔[s]<input id="cooldown" type="range" min="0" max="30" step="1" value="8"><span id="cooldownVal"></span></label>
+    <label>拡大半径[m]<input id="localRadius" type="range" min="30" max="350" step="10" value="140"><span id="localRadiusVal"></span></label>
+
+    <h2>状態</h2>
+    <div class="stats">
+      <div class="card"><div class="k">現在ゲート</div><div class="v" id="gateInfo">-</div></div>
+      <div class="card"><div class="k">モード</div><div class="v" id="modeInfo">-</div></div>
+      <div class="card"><div class="k">横ずれ</div><div class="v" id="offInfo">-</div></div>
+      <div class="card"><div class="k">復帰先</div><div class="v" id="rejoinInfo">-</div></div>
+      <div class="card"><div class="k">通過済み</div><div class="v" id="passedInfo">-</div></div>
+      <div class="card"><div class="k">経過時間</div><div class="v" id="timeInfo">-</div></div>
+      <div class="card"><div class="k">元ゲート数</div><div class="v" id="origGateInfo">-</div></div>
+      <div class="card"><div class="k">復帰回数</div><div class="v" id="recoverInfo">-</div></div>
+    </div>
+
+    <h2>凡例</h2>
+    <div class="legend">
+      <div><span class="sw" style="background:#f7d86a"></span> 現在追従しているパス</div>
+      <div><span class="sw" style="background:#94a3b8"></span> 元の計画パス</div>
+      <div><span class="sw" style="background:#22c55e"></span> Rmin円弧ゲート</div>
+      <div><span class="sw" style="background:#fb923c"></span> 整流ゲート</div>
+      <div><span class="sw" style="background:#a855f7"></span> 外乱復帰ゲート</div>
+      <div><span class="sw" style="background:#1f4ea8"></span> 航跡</div>
+      <div><span class="sw" style="background:#ff4b55"></span> 物理ブイ / 4m計画円</div>
+    </div>
+    <h2>考え方</h2>
+    <div class="mono">通常時:
+  original_gates を順番に追従
+
+逸脱時:
+  1. 現在位置を元パスへ射影し横ずれを判定
+  2. 残りゲートから復帰しやすいゲートを探索
+  3. 現在位置・方位 → 復帰先ゲート姿勢をRmin制約つきDubins経路で接続
+  4. Dubins経路上に復帰ゲートを配置
+  5. recovery_gates + original_gates[復帰先以降] を一時パスにする
+
+復帰ゲートを抜けたら:
+  元のゲート列追従へ戻る</div>
+  </div>
+</div>
+<script>
+const overview=document.getElementById('overview'), octx=overview.getContext('2d');
+const local=document.getElementById('local'), lctx=local.getContext('2d');
+const $=id=>document.getElementById(id);
+const controlIds=['clearance','rmin','gateCount','arcScale','alignCount','alignLength','speed','timeScale','lookFar','lookNear','nearRadius','gateLead','gain','turnTau','offThreshold','searchAhead','recoveryCount','recoveryLength','cooldown','localRadius'];
+
+const raw={
+ A:{lon:136.07198,lat:35.45327}, B:{lon:136.07399,lat:35.44437}, C:{lon:136.07628,lat:35.43214}, D:{lon:136.09377,lat:35.42587},
+ E:{lon:136.12038,lat:35.42542}, F:{lon:136.14585,lat:35.43055}, G:{lon:136.12081,lat:35.44150}, H:{lon:136.09429,lat:35.44196}
+};
+const routeNames=['A','B','C','D','E','F','G','H','C','B','A'];
+const eventLabels=['B往路','C往路','D','E','F','G','H','C復路','B復路'];
+let pts={}, route=[], eventGroups=[], originalGates=[], originalPath=[], originalCum=[];
+let gates=[], path=[], cum=[], totalLen=0, recoveryMode=false, recoveryGateCount=0, nextOrigIdx=0, lastRejoin='-';
+let ship, trail=[], activeGate=0, running=false, lastFrame=performance.now(), simTime=0, recoveries=0, autoRecovery=true, recoveryCooldown=0, lastOff=0, lookPoint=null, modeText='初期化';
+let globalView={cx:0,cy:0,span:1};
+
+function m(v){return +v} function deg(v){return v*180/Math.PI} function rad(v){return v*Math.PI/180}
+function add(a,b){return{x:a.x+b.x,y:a.y+b.y}} function sub(a,b){return{x:a.x-b.x,y:a.y-b.y}} function mul(a,s){return{x:a.x*s,y:a.y*s}}
+function dot(a,b){return a.x*b.x+a.y*b.y} function cross(a,b){return a.x*b.y-a.y*b.x} function len(v){return Math.hypot(v.x,v.y)} function dist(a,b){return len(sub(a,b))}
+function norm(v){const L=len(v);return L<1e-9?{x:0,y:0}:{x:v.x/L,y:v.y/L}} function angleOf(v){return Math.atan2(v.y,v.x)}
+function wrap(a){while(a>Math.PI)a-=2*Math.PI;while(a<-Math.PI)a+=2*Math.PI;return a} function clamp(v,a,b){return Math.max(a,Math.min(b,v))}
+function left(v){return{x:-v.y,y:v.x}} function lerp(a,b,t){return a+(b-a)*t} function m2px(view,v){return v*view.scale}
+function speed(){return +$('speed').value} function Rmin(){return +$('rmin').value} function maxKappa(){return 1/Math.max(Rmin(),1e-6)}
+
+function projectPoints(){
+  const vals=Object.values(raw); const lat0=vals.reduce((a,p)=>a+p.lat,0)/vals.length; const lon0=vals.reduce((a,p)=>a+p.lon,0)/vals.length;
+  const ky=110574; const kx=111320*Math.cos(lat0*Math.PI/180); const out={};
+  for(const [k,p] of Object.entries(raw)) out[k]={name:k,x:(p.lon-lon0)*kx,y:(p.lat-lat0)*ky};
+  return out;
+}
+function makeRoute(){pts=projectPoints(); route=routeNames.map((name,i)=>({...pts[name],base:name,seq:i}));}
+
+function chooseOrient(thetaCenter, vin, vout){
+  let vm=norm(add(vin,vout)); if(len(vm)<1e-9) vm=vout;
+  let best=1, bestErr=1e9;
+  for(const orient of [1,-1]){
+    const tang={x:-Math.sin(thetaCenter)*orient,y:Math.cos(thetaCenter)*orient};
+    const err=Math.abs(wrap(angleOf(tang)-angleOf(vm)));
+    if(err<bestErr){bestErr=err;best=orient;}
+  }
+  return best;
+}
+function makeBuoyGateSet(i,label){
+  const Pprev=route[i-1], P=route[i], Pnext=route[i+1];
+  const clear=+$('clearance').value, R=Rmin(), N=+$('gateCount').value, arcScale=(+$('arcScale').value)/100;
+  const vin=norm(sub(P,Pprev)), vout=norm(sub(Pnext,P));
+  const rprev=norm(sub(Pprev,P)), rnext=norm(sub(Pnext,P));
+  let bsmall=add(rprev,rnext);
+  if(len(bsmall)<1e-9){ const s=cross(vin,vout)>=0?1:-1; bsmall=mul(left(vout),s); }
+  bsmall=norm(bsmall); const n=mul(bsmall,-1);
+  const contact=add(P,mul(n,clear));
+  const center=add(P,mul(n,clear-R));
+  const thetaCenter=angleOf(sub(contact,center));
+  const orient=chooseOrient(thetaCenter,vin,vout);
+  const thetaIn=angleOf(vin)-orient*Math.PI/2; const thetaOut=angleOf(vout)-orient*Math.PI/2;
+  let sIn=orient*wrap(thetaIn-thetaCenter); let sOut=orient*wrap(thetaOut-thetaCenter);
+  if(sIn>0) sIn-=2*Math.PI; if(sOut<0) sOut+=2*Math.PI;
+  const minHalf=6*Math.PI/180; if(Math.abs(sIn)<minHalf) sIn=-minHalf; if(Math.abs(sOut)<minHalf) sOut=minHalf;
+  sIn*=arcScale; sOut*=arcScale;
+  const group={label,base:P.base,buoy:P,center,contact,R,clear,thetaCenter,orient,sIn,sOut}; eventGroups.push(group);
+  const set=[];
+  for(let k=0;k<N;k++){
+    const q=N===1?0.5:k/(N-1); let s;
+    if(q<=0.5){const u=q/0.5; s=sIn*(1-u);}else{const u=(q-0.5)/0.5; s=sOut*u;}
+    const th=thetaCenter+orient*s;
+    set.push({x:center.x+R*Math.cos(th),y:center.y+R*Math.sin(th),theta:0,label:`${label} ${k+1}/${N}`,kind:'buoy',eventLabel:label,origIdx:-1});
+  }
+  for(let k=0;k<set.length;k++) set[k].theta = k<set.length-1 ? angleOf(sub(set[k+1],set[k])) : angleOf(sub(set[k],set[k-1]));
+  return set;
+}
+function hermite(P0,P1,m0,m1,t){const t2=t*t,t3=t2*t; const h00=2*t3-3*t2+1,h10=t3-2*t2+t,h01=-2*t3+3*t2,h11=t3-t2; return{x:h00*P0.x+h10*m0.x+h01*P1.x+h11*m1.x,y:h00*P0.y+h10*m0.y+h01*P1.y+h11*m1.y};}
+function hermiteD(P0,P1,m0,m1,t){const t2=t*t; const h00=6*t2-6*t,h10=3*t2-4*t+1,h01=-6*t2+6*t,h11=3*t2-2*t; return{x:h00*P0.x+h10*m0.x+h01*P1.x+h11*m1.x,y:h00*P0.y+h10*m0.y+h01*P1.y+h11*m1.y};}
+
+function mod2pi(a){a=a%(2*Math.PI); return a<0?a+2*Math.PI:a;}
+function dubinsParams(alpha,beta,d,type){
+  const sa=Math.sin(alpha), sb=Math.sin(beta), ca=Math.cos(alpha), cb=Math.cos(beta), cab=Math.cos(alpha-beta);
+  let tmp,p2,p,t,q;
+  if(type==='LSL'){
+    tmp=d+sa-sb; p2=2+d*d-2*cab+2*d*(sa-sb); if(p2<0) return null;
+    tmp=Math.atan2(cb-ca,tmp); return [mod2pi(-alpha+tmp), Math.sqrt(p2), mod2pi(beta-tmp)];
+  }
+  if(type==='RSR'){
+    tmp=d-sa+sb; p2=2+d*d-2*cab+2*d*(-sa+sb); if(p2<0) return null;
+    tmp=Math.atan2(ca-cb,tmp); return [mod2pi(alpha-tmp), Math.sqrt(p2), mod2pi(-beta+tmp)];
+  }
+  if(type==='LSR'){
+    p2=-2+d*d+2*cab+2*d*(sa+sb); if(p2<0) return null;
+    p=Math.sqrt(p2); tmp=Math.atan2(-ca-cb,d+sa+sb)-Math.atan2(-2,p);
+    return [mod2pi(-alpha+tmp), p, mod2pi(-beta+tmp)];
+  }
+  if(type==='RSL'){
+    p2=-2+d*d+2*cab-2*d*(sa+sb); if(p2<0) return null;
+    p=Math.sqrt(p2); tmp=Math.atan2(ca+cb,d-sa-sb)-Math.atan2(2,p);
+    return [mod2pi(alpha-tmp), p, mod2pi(beta-tmp)];
+  }
+  if(type==='RLR'){
+    tmp=(6-d*d+2*cab+2*d*(sa-sb))/8; if(Math.abs(tmp)>1) return null;
+    p=mod2pi(2*Math.PI-Math.acos(tmp)); t=mod2pi(alpha-Math.atan2(ca-cb,d-sa+sb)+p/2); q=mod2pi(alpha-beta-t+p);
+    return [t,p,q];
+  }
+  if(type==='LRL'){
+    tmp=(6-d*d+2*cab+2*d*(-sa+sb))/8; if(Math.abs(tmp)>1) return null;
+    p=mod2pi(2*Math.PI-Math.acos(tmp)); t=mod2pi(-alpha-Math.atan2(ca-cb,d+sa-sb)+p/2); q=mod2pi(beta-alpha-t+p);
+    return [t,p,q];
+  }
+  return null;
+}
+function dubinsPlan(start,target,R){
+  const dx=(target.x-start.x)/R, dy=(target.y-start.y)/R, c=Math.cos(start.theta), s=Math.sin(start.theta);
+  const x=c*dx+s*dy, y=-s*dx+c*dy, phi=wrap(target.theta-start.theta);
+  const d=Math.hypot(x,y), th=Math.atan2(y,x), alpha=mod2pi(-th), beta=mod2pi(phi-th);
+  const types=['LSL','RSR','LSR','RSL','RLR','LRL']; let best=null;
+  for(const type of types){
+    const prm=dubinsParams(alpha,beta,d,type); if(!prm) continue;
+    const total=(prm[0]+prm[1]+prm[2])*R;
+    if(!best || total<best.total) best={type,params:prm,total,R,start};
+  }
+  return best;
+}
+function advanceDubinsLocal(pose,mode,l){
+  let {x,y,psi}=pose;
+  if(mode==='S'){
+    x+=l*Math.cos(psi); y+=l*Math.sin(psi);
+  }else if(mode==='L'){
+    x+=Math.sin(psi+l)-Math.sin(psi); y+=-Math.cos(psi+l)+Math.cos(psi); psi=wrap(psi+l);
+  }else if(mode==='R'){
+    x+=Math.sin(psi)-Math.sin(psi-l); y+=Math.cos(psi-l)-Math.cos(psi); psi=wrap(psi-l);
+  }
+  return {x,y,psi};
+}
+function poseOnDubins(plan,distAlong){
+  const modes=plan.type.split(''), R=plan.R; let remain=distAlong/R; let pose={x:0,y:0,psi:0};
+  for(let i=0;i<3;i++){
+    const seg=plan.params[i]; const take=Math.min(remain,seg);
+    if(take>0) pose=advanceDubinsLocal(pose,modes[i],take);
+    remain-=take; if(remain<=1e-9) break;
+  }
+  const c=Math.cos(plan.start.theta), s=Math.sin(plan.start.theta);
+  return {x:plan.start.x+R*(c*pose.x-s*pose.y), y:plan.start.y+R*(s*pose.x+c*pose.y), theta:wrap(plan.start.theta+pose.psi)};
+}
+function makeAlignGates(a,b,count,limit,label){
+  const out=[]; if(count<=0) return out; const d=dist(a,b); if(d<1e-6) return out;
+  const u0={x:Math.cos(a.theta),y:Math.sin(a.theta)}, u1={x:Math.cos(b.theta),y:Math.sin(b.theta)}; const L=Math.min(0.42*d,limit);
+  const m0=mul(u0,L),m1=mul(u1,L);
+  for(let k=1;k<=count;k++){const t=k/(count+1); const p=hermite(a,b,m0,m1,t); const v=hermiteD(a,b,m0,m1,t); out.push({x:p.x,y:p.y,theta:angleOf(v),label:`${label}整流 ${k}/${count}`,kind:'align',origIdx:-1});}
+  return out;
+}
+function buildOriginalGates(){
+  eventGroups=[]; const sets=[];
+  for(let i=1;i<route.length-1;i++) sets.push(makeBuoyGateSet(i,eventLabels[i-1]));
+  const all=[]; const ac=+$('alignCount').value, al=+$('alignLength').value;
+  for(let i=0;i<sets.length;i++){
+    for(const g of sets[i]) all.push(g);
+    if(i<sets.length-1){ const aligns=makeAlignGates(sets[i][sets[i].length-1],sets[i+1][0],ac,al,eventLabels[i]); for(const g of aligns) all.push(g); }
+  }
+  all.forEach((g,i)=>{g.origIdx=i; if(!g.label)g.label=`G${i+1}`;});
+  originalGates=all; originalPath=[route[0],...originalGates,route[route.length-1]]; originalCum=computeCumFor(originalPath);
+}
+function computeCumFor(poly){const c=[0]; let s=0; for(let i=1;i<poly.length;i++){s+=dist(poly[i-1],poly[i]); c.push(s);} c.total=s; return c;}
+function rebuildActivePath(startPoint=null){
+  path=[startPoint?{x:startPoint.x,y:startPoint.y,theta:ship?ship.psi:0,label:'現在位置',kind:'start'}:route[0],...gates,route[route.length-1]];
+  cum=computeCumFor(path); totalLen=cum.total;
+}
+function resetActiveToOriginal(){gates=originalGates.slice(nextOrigIdx); recoveryMode=false; recoveryGateCount=0; rebuildActivePath(ship||route[0]); activeGate=0; lastRejoin='通常';}
+function buildScenario(){makeRoute(); buildOriginalGates(); nextOrigIdx=0; gates=originalGates.slice(); recoveryMode=false; recoveryGateCount=0; ship={x:route[0].x,y:route[0].y,psi:angleOf(sub(originalGates[0],route[0])),kappa:0,kappaCmd:0,r:0}; rebuildActivePath(route[0]); computeGlobalView();}
+
+function sampleAtS(s){s=clamp(s,0,totalLen); for(let i=1;i<path.length;i++){if(cum[i]>=s){const a=path[i-1],b=path[i]; const q=(s-cum[i-1])/Math.max(cum[i]-cum[i-1],1e-9); return{x:lerp(a.x,b.x,q),y:lerp(a.y,b.y,q),s};}} const p=path[path.length-1]; return{x:p.x,y:p.y,s:totalLen};}
+function gateS(idx){return cum[Math.min(idx+1,cum.length-1)]||0;}
+function projectToActivePath(p,aroundActive=true){
+  let i0=1, i1=path.length-1;
+  if(aroundActive){i0=Math.max(1,activeGate); i1=Math.min(path.length-1, activeGate+8);}
+  let best={d:Infinity,s:0,q:path[0],seg:0};
+  for(let i=i0;i<=i1;i++){const a=path[i-1],b=path[i],v=sub(b,a),w=sub(p,a); const t=clamp(dot(w,v)/Math.max(dot(v,v),1e-9),0,1); const q=add(a,mul(v,t)); const d=dist(p,q); const s=cum[i-1]+dist(a,b)*t; if(d<best.d) best={d,s,q,seg:i-1};}
+  return best;
+}
+function nearestBuoyDist(p){let d=Infinity; for(let i=1;i<route.length-1;i++) d=Math.min(d,dist(p,route[i])); return d;}
+function effectiveLookahead(){const far=+$('lookFar').value, near=+$('lookNear').value, radius=+$('nearRadius').value; const d=nearestBuoyDist(ship); const q=clamp(d/radius,0,1); return near*(1-q)+far*q;}
+function control(){
+  const proj=projectToActivePath(ship,true); lastOff=proj.d;
+  const Ld=effectiveLookahead(); const gateLimit=activeGate<gates.length ? gateS(activeGate)+(+$('gateLead').value) : totalLen;
+  const targetS=clamp(proj.s+Ld,0,Math.max(gateLimit,proj.s+5)); lookPoint=sampleAtS(Math.min(targetS,totalLen));
+  const desired=angleOf(sub(lookPoint,ship)); const alpha=wrap(desired-ship.psi); const distLook=Math.max(dist(ship,lookPoint),1);
+  let k=(+$('gain').value)*2*Math.sin(alpha)/distLook; return clamp(k,-maxKappa(),maxKappa());
+}
+function advanceExact(dt){const v=speed(), r=ship.r, p0=ship.psi; if(Math.abs(r)<1e-9){ship.x+=v*Math.cos(p0)*dt; ship.y+=v*Math.sin(p0)*dt; return;} const p1=wrap(p0+r*dt); ship.x+=(v/r)*(Math.sin(p1)-Math.sin(p0)); ship.y+=-(v/r)*(Math.cos(p1)-Math.cos(p0)); ship.psi=p1;}
+function gateFrame(g){return{nx:Math.cos(g.theta),ny:Math.sin(g.theta),px:-Math.sin(g.theta),py:Math.cos(g.theta)}}
+function signedAlong(p,g){const f=gateFrame(g); return (p.x-g.x)*f.nx+(p.y-g.y)*f.ny;} function lateral(p,g){const f=gateFrame(g); return (p.x-g.x)*f.px+(p.y-g.y)*f.py;}
+function crossedGate(prev,cur,g){const a0=signedAlong(prev,g),a1=signedAlong(cur,g); if(!(a0<=0&&a1>=0)) return false; const den=a0-a1; const t=Math.abs(den)>1e-9?clamp(a0/den,0,1):1; const q={x:prev.x+(cur.x-prev.x)*t,y:prev.y+(cur.y-prev.y)*t}; return Math.abs(lateral(q,g))<12;}
+function passCurrentGate(prev,cur){
+  if(activeGate>=gates.length) return;
+  const g=gates[activeGate]; if(crossedGate(prev,cur,g) || dist(cur,g)<14){
+    const passed=g; activeGate++;
+    if(passed.origIdx!==undefined && passed.origIdx>=0) nextOrigIdx=Math.max(nextOrigIdx,passed.origIdx+1);
+    if(recoveryMode && activeGate>=recoveryGateCount){ recoveryMode=false; recoveryCooldown=+$('cooldown').value; modeText='復帰完了 → 通常追従'; }
+  }
+}
+function findRejoinGate(){
+  const start=Math.max(nextOrigIdx,0); const end=Math.min(originalGates.length-1,start+(+$('searchAhead').value));
+  let bestIdx=start,bestScore=Infinity,bestPlan=null;
+  const startPose={x:ship.x,y:ship.y,theta:ship.psi};
+  for(let j=start;j<=end;j++){
+    const g=originalGates[j]; const targetPose={x:g.x,y:g.y,theta:g.theta};
+    const plan=dubinsPlan(startPose,targetPose,Rmin()); if(!plan) continue;
+    const d=dist(ship,g); const forwardPenalty=Math.abs(wrap(angleOf(sub(g,ship))-ship.psi))*40;
+    const score=plan.total + forwardPenalty + (j-start)*15 + Math.max(0,180-d)*0.5;
+    if(score<bestScore){bestScore=score; bestIdx=j; bestPlan=plan;}
+  }
+  return bestIdx;
+}
+function generateRecoveryGates(rejoinIdx){
+  const target=originalGates[rejoinIdx];
+  const startPose={x:ship.x,y:ship.y,theta:ship.psi};
+  const targetPose={x:target.x,y:target.y,theta:target.theta};
+  const plan=dubinsPlan(startPose,targetPose,Rmin());
+  if(!plan){
+    // Fallback should rarely happen. Keep old-style direct gate only as a last resort.
+    return [{x:target.x,y:target.y,theta:target.theta,label:'復帰 fallback',kind:'recovery',origIdx:-1}];
+  }
+  const minCount=+$('recoveryCount').value;
+  const maxSpacing=Math.max(20,+$('recoveryLength').value);
+  const count=Math.min(60,Math.max(minCount,Math.ceil(plan.total/maxSpacing)));
+  const out=[];
+  for(let k=1;k<=count;k++){
+    const s=plan.total*k/(count+1);
+    const p=poseOnDubins(plan,s);
+    out.push({x:p.x,y:p.y,theta:p.theta,label:`復帰Rmin ${k}/${count} ${plan.type}`,kind:'recovery',origIdx:-1});
+  }
+  return out;
+}
+function triggerRecovery(reason='手動'){
+  const rejoin=findRejoinGate(); const rec=generateRecoveryGates(rejoin); gates=[...rec,...originalGates.slice(rejoin)]; recoveryMode=true; recoveryGateCount=rec.length; activeGate=0; lastRejoin=`${rejoin+1}: ${originalGates[rejoin].label}`; rebuildActivePath(ship); recoveries++; recoveryCooldown=+$('cooldown').value; modeText=`復帰再計算: ${reason}`;}
+function checkRecovery(){ if(!autoRecovery||recoveryMode||recoveryCooldown>0||activeGate>=gates.length) return; const proj=projectToActivePath(ship,true); lastOff=proj.d; if(proj.d>+$('offThreshold').value) triggerRecovery(`横ずれ ${Math.round(proj.d)}m`);}
+function stepSim(realDt){let remain=realDt*(+$('timeScale').value); const maxSub=0.20; while(remain>1e-9){const dt=Math.min(maxSub,remain); remain-=dt; simTime+=dt; recoveryCooldown=Math.max(0,recoveryCooldown-dt); if(activeGate>=gates.length){modeText='完了'; break;} const prev={x:ship.x,y:ship.y}; ship.kappaCmd=control(); const tau=Math.max(0.05,+$('turnTau').value); ship.kappa+=(ship.kappaCmd-ship.kappa)*(1-Math.exp(-dt/tau)); ship.kappa=clamp(ship.kappa,-maxKappa(),maxKappa()); ship.r=speed()*ship.kappa; advanceExact(dt); trail.push({x:ship.x,y:ship.y}); if(trail.length>7000) trail.shift(); passCurrentGate(prev,ship); checkRecovery(); if(!recoveryMode && activeGate<gates.length && !modeText.includes('復帰')) modeText='通常ゲート追従'; }}
+function resetSim(){buildScenario(); activeGate=0; trail=[{x:ship.x,y:ship.y}]; simTime=0; recoveries=0; recoveryCooldown=0; lastRejoin='-'; lastOff=0; modeText='初期化'; drawAll(); updateUI();}
+
+function computeGlobalView(){const all=[...route,...originalGates]; const xs=all.map(p=>p.x), ys=all.map(p=>p.y); const minX=Math.min(...xs)-250,maxX=Math.max(...xs)+250,minY=Math.min(...ys)-250,maxY=Math.max(...ys)+250; globalView={cx:(minX+maxX)/2,cy:(minY+maxY)/2,span:Math.max(maxX-minX,maxY-minY)};}
+function makeView(canvas,ctx,cx,cy,span){const scale=Math.min(canvas.width,canvas.height)*0.90/span; return{canvas,ctx,cx,cy,scale,X:x=>canvas.width/2+(x-cx)*scale,Y:y=>canvas.height/2-(y-cy)*scale,S:d=>d*scale};}
+function clearView(v){v.ctx.fillStyle=getComputedStyle(document.documentElement).getPropertyValue('--water'); v.ctx.fillRect(0,0,v.canvas.width,v.canvas.height);} 
+function drawPath(v,pts,color,w,dash=[],alpha=1){if(!pts||pts.length<2)return; const c=v.ctx; c.save(); c.globalAlpha=alpha; c.strokeStyle=color; c.lineWidth=w; c.setLineDash(dash); c.lineCap='round'; c.lineJoin='round'; c.beginPath(); c.moveTo(v.X(pts[0].x),v.Y(pts[0].y)); for(let i=1;i<pts.length;i++) c.lineTo(v.X(pts[i].x),v.Y(pts[i].y)); c.stroke(); c.restore();}
+function drawGrid(v,step){const c=v.ctx; c.save(); c.strokeStyle='rgba(255,255,255,.20)'; c.lineWidth=1; const minX=v.cx-v.canvas.width/(2*v.scale),maxX=v.cx+v.canvas.width/(2*v.scale),minY=v.cy-v.canvas.height/(2*v.scale),maxY=v.cy+v.canvas.height/(2*v.scale); for(let x=Math.floor(minX/step)*step;x<=maxX;x+=step){c.beginPath();c.moveTo(v.X(x),v.Y(minY));c.lineTo(v.X(x),v.Y(maxY));c.stroke();} for(let y=Math.floor(minY/step)*step;y<=maxY;y+=step){c.beginPath();c.moveTo(v.X(minX),v.Y(y));c.lineTo(v.X(maxX),v.Y(y));c.stroke();} c.restore();}
+function drawGate(v,g){const c=v.ctx, f=gateFrame(g); let col='#22c55e', lw=4; if(g.kind==='align'){col='#fb923c';lw=3;} if(g.kind==='recovery'){col='#a855f7';lw=4;} c.save(); c.strokeStyle=col; c.lineWidth=lw; c.beginPath(); c.moveTo(v.X(g.x-f.px*2.5),v.Y(g.y-f.py*2.5)); c.lineTo(v.X(g.x+f.px*2.5),v.Y(g.y+f.py*2.5)); c.stroke(); c.fillStyle=col; c.beginPath(); c.arc(v.X(g.x),v.Y(g.y),Math.max(3,v.S(1.2)),0,Math.PI*2); c.fill(); c.restore();}
+function drawScene(v,localMode=false){clearView(v); drawGrid(v,localMode?20:500); drawPath(v,originalPath,'#64748b',3,[9,7],0.55); drawPath(v,path,'#f2c14e',10,[],0.55); drawPath(v,path,'#f7d86a',5,[],0.95); for(const e of eventGroups){ if(localMode && dist(ship,e.buoy)>+$('localRadius').value*1.5) continue; const c=v.ctx; c.save(); c.strokeStyle='rgba(232,121,249,.85)'; c.fillStyle='rgba(232,121,249,.08)'; c.lineWidth=1.5; c.beginPath(); c.arc(v.X(e.buoy.x),v.Y(e.buoy.y),v.S(+$('clearance').value),0,Math.PI*2); c.fill(); c.stroke(); c.restore(); const arc=[]; for(let i=0;i<=80;i++){const q=i/80; const s=e.sIn+(e.sOut-e.sIn)*q; const th=e.thetaCenter+e.orient*s; arc.push({x:e.center.x+e.R*Math.cos(th),y:e.center.y+e.R*Math.sin(th)});} drawPath(v,arc,'#0ea5e9',2,[6,5],0.75); }
+  for(const p of route){const c=v.ctx; c.save(); c.fillStyle='#ff4b55'; c.beginPath(); c.arc(v.X(p.x),v.Y(p.y),Math.max(4,v.S(2.2)),0,Math.PI*2); c.fill(); c.font='bold 12px system-ui'; c.fillStyle='#9f1239'; c.fillText(p.base,v.X(p.x)+7,v.Y(p.y)-7); c.restore();}
+  const drawGates = localMode ? gates.filter(g=>dist(g,ship)<+$('localRadius').value*1.35) : gates; for(const g of drawGates) drawGate(v,g);
+  const tr=localMode?trail.slice(Math.max(0,trail.length-900)):trail; drawPath(v,tr,'#1f4ea8',3,[],1); if(lookPoint) drawPath(v,[ship,lookPoint],'#8b5cf6',2,[5,4],0.9);
+  const c=v.ctx; c.save(); c.translate(v.X(ship.x),v.Y(ship.y)); c.rotate(-ship.psi); const sc=Math.max(12,v.S(localMode?3:20)); c.fillStyle='#fff'; c.strokeStyle='#1f4ea8'; c.lineWidth=2; c.beginPath(); c.moveTo(sc*1.1,0); c.lineTo(-sc*0.8,-sc*0.45); c.lineTo(-sc*0.55,0); c.lineTo(-sc*0.8,sc*0.45); c.closePath(); c.fill(); c.stroke(); c.restore(); if(localMode){c.save(); c.fillStyle='#111827'; c.font='bold 14px system-ui'; c.fillText('船中心拡大 / 復帰ゲートは紫',14,26); c.restore();}}
+function drawAll(){drawScene(makeView(overview,octx,globalView.cx,globalView.cy,globalView.span)); drawScene(makeView(local,lctx,ship.x,ship.y,+$('localRadius').value*2),true);}
+function fmtTime(sec){const m=Math.floor(sec/60),s=Math.floor(sec%60);return `${m}分${String(s).padStart(2,'0')}秒`;}
+function updateUI(){for(const id of controlIds){const el=$(id+'Val'); if(!el) continue; const v=+$(id).value; el.textContent=(id==='timeScale')?'×'+v.toFixed(0):(id==='gain'||id==='turnTau'||id==='clearance'?v.toFixed(1):v.toFixed(0));}
+  $('gateInfo').textContent=activeGate>=gates.length?'完了':`${activeGate+1}/${gates.length} ${gates[activeGate].label}`; $('modeInfo').textContent=`${modeText}${autoRecovery?'':' / 自動OFF'}`; $('offInfo').textContent=Math.round(lastOff)+' m'; $('rejoinInfo').textContent=lastRejoin; $('passedInfo').textContent=`active ${activeGate} / original next ${nextOrigIdx+1}`; $('timeInfo').textContent=fmtTime(simTime); $('origGateInfo').textContent=originalGates.length; $('recoverInfo').textContent=recoveries;}
+function loop(now){const dt=Math.min(0.05,(now-lastFrame)/1000); lastFrame=now; if(running){stepSim(dt); drawAll(); updateUI();} requestAnimationFrame(loop);}
+$('toggle').onclick=()=>{running=!running}; $('step').onclick=()=>{stepSim(0.05);drawAll();updateUI();}; $('reset').onclick=()=>resetSim(); $('disturb').onclick=()=>{ship.x+=(Math.random()*2-1)*220; ship.y+=(Math.random()*2-1)*220; ship.psi=wrap(ship.psi+(Math.random()*2-1)*1.3); ship.kappa=0; ship.r=0; modeText='外乱投入'; drawAll(); updateUI();}; $('manualRecover').onclick=()=>{triggerRecovery('手動'); drawAll(); updateUI();}; $('toggleRecovery').onclick=()=>{autoRecovery=!autoRecovery; updateUI();};
+for(const id of controlIds){$(id).addEventListener('input',()=>{ if(['clearance','rmin','gateCount','arcScale','alignCount','alignLength'].includes(id)){resetSim();} else {updateUI();drawAll();} });}
+resetSim(); requestAnimationFrame(loop);
+</script>
+</body>
+</html>
